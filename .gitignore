@@ -1,0 +1,11 @@
+/target
+/target/
+/.cache/
+/.continue/
+/.agents/
+/.catisen_history.json
+*.log
+/run_err*.txt
+*.bak-*
+*.bak2-*
+/attached_assets/

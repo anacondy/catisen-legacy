@@ -1,0 +1,48 @@
+[package]
+name = "catisen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+servo = { git = "https://github.com/servo/servo.git" }
+curl = "0.4.44"
+rand = "0.8"
+chrono = "0.4.44"
+image = "0.25"
+scraper = "0.20"
+font8x8 = "0.3"
+adblock = { version = "0.12.1", features = ["embedded-domain-resolver", "full-regex-handling"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+tokio = { version = "1.48", features = ["rt-multi-thread", "sync", "time", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "cookies", "stream", "socks"] }
+reqwest_cookie_store = "0.9"
+gl = "0.14.0"
+surfman = { version = "0.11.0", features = ["sm-angle-builtin"] }
+qrcode = "0.14"
+wasmtime = "43.0.1"
+symphonia = { version = "0.5.3", features = ["all"] }
+url = "2"
+embedder_traits = { package = "servo-embedder-traits", git = "https://github.com/servo/servo.git" }
+servo_config = { package = "servo-config", git = "https://github.com/servo/servo.git" }
+winit = "0.30.13"
+raw-window-handle = "0.6.2"
+rustls = { version = "0.23.37", features = ["ring"] }
+winapi = { version = "0.3", features = ["winuser"] }
+
+[dependencies.gtk]
+package = "gtk4"
+version = "0.8"
+optional = true
+
+[dependencies.eframe]
+version = "0.27"
+optional = true
+
+[features]
+default = ["egui_ui"]
+egui_ui = ["dep:eframe"]
+gtk_ui = ["dep:gtk"]
+servo_real = []
