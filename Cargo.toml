@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-servo = { git = "https://github.com/servo/servo.git" }
+servo = { git = "https://github.com/servo/servo.git", optional = true }
 curl = "0.4.44"
 rand = "0.8"
 chrono = "0.4.44"
@@ -25,8 +25,8 @@ qrcode = "0.14"
 wasmtime = "43.0.1"
 symphonia = { version = "0.5.3", features = ["all"] }
 url = "2"
-embedder_traits = { package = "servo-embedder-traits", git = "https://github.com/servo/servo.git" }
-servo_config = { package = "servo-config", git = "https://github.com/servo/servo.git" }
+embedder_traits = { package = "servo-embedder-traits", git = "https://github.com/servo/servo.git", optional = true }
+servo_config = { package = "servo-config", git = "https://github.com/servo/servo.git", optional = true }
 winit = "0.30.13"
 raw-window-handle = "0.6.2"
 rustls = { version = "0.23.37", features = ["ring"] }
@@ -45,4 +45,4 @@ optional = true
 default = ["egui_ui"]
 egui_ui = ["dep:eframe"]
 gtk_ui = ["dep:gtk"]
-servo_real = []
+servo_real = ["dep:servo", "dep:embedder_traits", "dep:servo_config"]
