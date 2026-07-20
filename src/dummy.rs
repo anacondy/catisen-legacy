@@ -1,1 +1,0 @@
-fn test() { let x: servo::Error; }
