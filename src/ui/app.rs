@@ -220,6 +220,39 @@ fn compute_selection_stats(text: &str, min_idx: usize, max_idx: usize) -> String
 }
 
 #[cfg(feature = "egui_ui")]
+fn extract_char_range(text: &str, min_idx: usize, max_idx: usize) -> String {
+    text.chars()
+        .skip(min_idx)
+        .take(max_idx.saturating_sub(min_idx))
+        .collect()
+}
+
+#[cfg(feature = "egui_ui")]
+fn find_match_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    let needle = query.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    // ASCII folding keeps byte offsets aligned with the original source while
+    // making Ctrl+F useful for normal HTML/CSS/JavaScript text.
+    let haystack = text.to_ascii_lowercase();
+    let folded_needle = needle.to_ascii_lowercase();
+    let needle_chars = folded_needle.chars().count();
+    if needle_chars == 0 {
+        return Vec::new();
+    }
+
+    haystack
+        .match_indices(&folded_needle)
+        .map(|(byte_idx, _)| {
+            let char_idx = haystack[..byte_idx].chars().count();
+            (char_idx, char_idx + needle_chars)
+        })
+        .collect()
+}
+
+#[cfg(feature = "egui_ui")]
 const BINARY_DOWNLOAD_PREFIX: &str = "__BINARY_DOWNLOAD__::";
 
 #[cfg(feature = "egui_ui")]
@@ -385,6 +418,7 @@ struct Tab {
     focus_url_bar: bool,
     selection_stats: Option<String>,
     last_selection_range: Option<(usize, usize)>,
+    selected_text: Option<String>,
     visual_snapshot_path: Option<String>,
     visual_manifest_path: Option<String>,
     visual_texture_path: Option<String>,
@@ -410,6 +444,7 @@ impl Tab {
             focus_url_bar: true,
             selection_stats: None,
             last_selection_range: None,
+            selected_text: None,
             visual_snapshot_path: None,
             visual_manifest_path: None,
             visual_texture_path: None,
@@ -426,6 +461,11 @@ struct CatisenApp {
     next_tab_id: usize,
     show_settings: bool,
     show_history: bool,
+    find_open: bool,
+    find_query: String,
+    find_match_index: usize,
+    find_focus: bool,
+    find_selection_applied: Option<(String, usize)>,
     default_tor_enabled: bool,
     tor_enabled: bool,
     tab_isolation_enabled: bool,
@@ -695,6 +735,11 @@ impl CatisenApp {
             next_tab_id: 2,
             show_settings: false,
             show_history: false,
+            find_open: false,
+            find_query: String::new(),
+            find_match_index: 0,
+            find_focus: false,
+            find_selection_applied: None,
             default_tor_enabled,
             tor_enabled: startup_tor_enabled,
             tab_isolation_enabled: true,
@@ -1269,6 +1314,19 @@ impl eframe::App for CatisenApp {
         if ctx.input(|i| i.key_pressed(egui::Key::F12) || (i.modifiers.command && i.key_pressed(egui::Key::D))) {
             self.debug_panel.toggle();
         }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+            self.find_open = true;
+            self.find_focus = true;
+            self.find_match_index = 0;
+            self.find_selection_applied = None;
+            self.show_history = false;
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::H)) {
+            self.show_history = !self.show_history;
+            self.show_settings = false;
+            self.find_open = false;
+            self.find_selection_applied = None;
+        }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::T)) {
             let tab_context = self.tab_manager.create_new_tab();
             let _tab_id = tab_context.tab_id;
@@ -1292,10 +1350,34 @@ impl eframe::App for CatisenApp {
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.show_settings = false;
+            self.show_history = false;
+            self.find_open = false;
+            self.find_selection_applied = None;
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::R)) {
             trigger_refresh = true;
         }
+        if self.find_open && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let backwards = ctx.input(|i| i.modifiers.shift);
+            if backwards {
+                self.find_match_index = self.find_match_index.saturating_sub(1);
+            } else {
+                self.find_match_index = self.find_match_index.saturating_add(1);
+            }
+            self.find_selection_applied = None;
+        }
+
+        let page_scroll_delta = if !self.show_settings && !self.show_history && !self.find_open {
+            if ctx.input(|i| i.key_pressed(egui::Key::PageUp)) {
+                Some(egui::vec2(0.0, 600.0))
+            } else if ctx.input(|i| i.key_pressed(egui::Key::PageDown)) {
+                Some(egui::vec2(0.0, -600.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Close via shortcut
         if let Some(idx) = tab_to_close_global {
@@ -1337,6 +1419,7 @@ impl eframe::App for CatisenApp {
                             tab.bytes_received = Some(size);
                             tab.selection_stats = None;
                             tab.last_selection_range = None;
+                            tab.selected_text = None;
 
                             if tab.view_mode == ViewMode::Visual {
                                 tab.visual_snapshot_path = tab
@@ -1382,6 +1465,7 @@ impl eframe::App for CatisenApp {
                             tab.bytes_received = None;
                             tab.selection_stats = None;
                             tab.last_selection_range = None;
+                            tab.selected_text = None;
                             tab.visual_snapshot_path = None;
                             tab.visual_manifest_path = None;
                             tab.visual_texture = None;
@@ -1543,6 +1627,43 @@ impl eframe::App for CatisenApp {
                 }
             });
             
+            if self.find_open {
+                let match_count = self
+                    .tabs
+                    .get(self.active_tab)
+                    .map(|tab| find_match_ranges(&tab.edited_content, &self.find_query).len())
+                    .unwrap_or(0);
+                ui.horizontal(|ui| {
+                    ui.label("🔎 Find:");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.find_query)
+                            .desired_width(260.0)
+                            .hint_text("Find in source...")
+                    );
+                    if self.find_focus {
+                        response.request_focus();
+                        self.find_focus = false;
+                    }
+                    if response.changed() {
+                        self.find_match_index = 0;
+                        self.find_selection_applied = None;
+                    }
+                    ui.label(format!("{match_count} match(es)"));
+                    if ui.button("◀").on_hover_text("Previous match (Shift+Enter)").clicked() {
+                        self.find_match_index = self.find_match_index.saturating_sub(1);
+                        self.find_selection_applied = None;
+                    }
+                    if ui.button("▶").on_hover_text("Next match (Enter)").clicked() {
+                        self.find_match_index = self.find_match_index.saturating_add(1);
+                        self.find_selection_applied = None;
+                    }
+                    if ui.button("✕").on_hover_text("Close find (Escape)").clicked() {
+                        self.find_open = false;
+                        self.find_selection_applied = None;
+                    }
+                });
+            }
+
             let show_fps_overlay = self.show_fps_overlay;
             let show_refresh_overlay = self.show_refresh_overlay;
             let current_fps = self.current_fps;
@@ -1612,8 +1733,9 @@ impl eframe::App for CatisenApp {
         if self.show_history {
             let mut history_open = self.show_history;
             let mut requested_url_from_history = None;
-            egui::Window::new("📖 History & Bookmarks")
+            let history_response = egui::Window::new("📖 History & Bookmarks")
                 .open(&mut history_open)
+                .collapsible(false)
                 .resizable(true)
                 .scroll2([false, true])
                 .show(ctx, |ui| {
@@ -1652,6 +1774,11 @@ impl eframe::App for CatisenApp {
                         }
                     }
                 });
+            if let Some(response) = history_response {
+                if response.response.clicked_elsewhere() {
+                    history_open = false;
+                }
+            }
             self.show_history = history_open;
             
             if let Some(url) = requested_url_from_history {
@@ -1943,6 +2070,7 @@ impl eframe::App for CatisenApp {
                 tab.visual_texture_path = None;
                 tab.selection_stats = None;
                 tab.last_selection_range = None;
+                tab.selected_text = None;
                 tab.page_content = Some(Ok("Dialing connection... bypassing trackers...\nCheck terminal logs for network status.".to_string()));
                 let (tx, rx) = mpsc::unbounded_channel();
                 tab.receiver = Some(rx);
@@ -1971,6 +2099,12 @@ impl eframe::App for CatisenApp {
                 );
             }
         }
+
+        let find_open = self.find_open;
+        let find_query = self.find_query.clone();
+        let find_match_index = self.find_match_index;
+        let find_selection_applied = self.find_selection_applied.clone();
+        let mut find_selection_applied_this_frame: Option<(String, usize)> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let active_tab = &mut self.tabs[self.active_tab];
@@ -2160,8 +2294,12 @@ impl eframe::App for CatisenApp {
                         active_tab.last_selection_range = None;
                     } else {
                         egui::ScrollArea::vertical()
+                        .id_source("source_content_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            if let Some(delta) = page_scroll_delta {
+                                ui.scroll_with_delta(delta);
+                            }
                             let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
                                 let mut job = egui::text::LayoutJob::default();
                                 let format_normal = egui::TextFormat {
@@ -2227,21 +2365,54 @@ impl eframe::App for CatisenApp {
                                 active_tab.edited_content.clone()
                             };
 
-                            let response = ui.add(
-                                egui::TextEdit::multiline(&mut display_text)
-                                    .font(egui::TextStyle::Monospace)
-                                    .frame(false)
-                                    .interactive(true) // Allows selection
-                                    .desired_width(f32::INFINITY)
-                                    .lock_focus(true)
-                                    .layouter(&mut layouter)
-                            );
+                            let response = ui
+                                .add(
+                                    egui::TextEdit::multiline(&mut display_text)
+                                        .font(egui::TextStyle::Monospace)
+                                        .frame(false)
+                                        .interactive(true) // Allows selection
+                                        .desired_width(f32::INFINITY)
+                                        .lock_focus(true)
+                                        .layouter(&mut layouter)
+                                );
+
+                            let selected_text_for_menu = active_tab.selected_text.clone();
+                            response.context_menu(|ui| {
+                                if let Some(selected) = selected_text_for_menu.as_deref() {
+                                    if ui.button("📋 Copy selected text").clicked() {
+                                        ui.output_mut(|output| output.copied_text = selected.to_owned());
+                                        ui.close_menu();
+                                    }
+                                } else {
+                                    ui.label("Select source text first");
+                                }
+                            });
                             
                             if !is_truncated && display_text != active_tab.edited_content {
                                 active_tab.edited_content = display_text;
                             }
                             
                             if view_mode == ViewMode::SourceCode {
+                                // Ctrl+F selects the active match and asks the parent
+                                // ScrollArea to bring it into view.
+                                let matches = find_match_ranges(&display_text, &find_query);
+                                if find_open && !find_query.trim().is_empty() {
+                                    if let Some(&(start, end)) = matches.get(find_match_index % matches.len().max(1)) {
+                                        let applied_key = (find_query.clone(), find_match_index);
+                                        if find_selection_applied.as_ref() != Some(&applied_key) {
+                                            if let Some(mut state) = egui::TextEdit::load_state(ctx, response.id) {
+                                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                                    egui::text::CCursor::new(start),
+                                                    egui::text::CCursor::new(end),
+                                                )));
+                                                state.store(ctx, response.id);
+                                                ui.scroll_to_cursor(Some(egui::Align::Center));
+                                                find_selection_applied_this_frame = Some(applied_key);
+                                            }
+                                        }
+                                    }
+                                }
+
                                 if let Some(state) = egui::TextEdit::load_state(ctx, response.id) {
                                     if let Some(cursor_range) = state.cursor.char_range() {
                                         let primary = cursor_range.primary.index;
@@ -2252,7 +2423,12 @@ impl eframe::App for CatisenApp {
                                             let current_range = Some((min_idx, max_idx));
                                             if active_tab.last_selection_range != current_range {
                                                 active_tab.selection_stats = Some(compute_selection_stats(
-                                                    &active_tab.edited_content,
+                                                    &display_text,
+                                                    min_idx,
+                                                    max_idx,
+                                                ));
+                                                active_tab.selected_text = Some(extract_char_range(
+                                                    &display_text,
                                                     min_idx,
                                                     max_idx,
                                                 ));
@@ -2261,18 +2437,22 @@ impl eframe::App for CatisenApp {
                                         } else {
                                             active_tab.selection_stats = None;
                                             active_tab.last_selection_range = None;
+                                            active_tab.selected_text = None;
                                         }
                                     } else {
                                         active_tab.selection_stats = None;
                                         active_tab.last_selection_range = None;
+                                        active_tab.selected_text = None;
                                     }
                                 } else {
                                     active_tab.selection_stats = None;
                                     active_tab.last_selection_range = None;
+                                    active_tab.selected_text = None;
                                 }
                             } else {
                                 active_tab.selection_stats = None;
                                 active_tab.last_selection_range = None;
+                                active_tab.selected_text = None;
                             }
                         });
                     }
@@ -2300,6 +2480,10 @@ impl eframe::App for CatisenApp {
                 });
             }
         });
+
+        if find_selection_applied_this_frame.is_some() {
+            self.find_selection_applied = find_selection_applied_this_frame;
+        }
 
         self.debug_panel.show(ctx, self.tor_enabled, self.target_fps, self.current_fps, visual_mode_active);
 
@@ -2355,5 +2539,23 @@ impl eframe::App for CatisenApp {
             let frame_time = std::time::Duration::from_secs_f32((1.0 / target).max(0.001));
             ctx.request_repaint_after(frame_time);
         }
+    }
+}
+
+#[cfg(all(test, feature = "egui_ui"))]
+mod source_navigation_tests {
+    use super::{extract_char_range, find_match_ranges};
+
+    #[test]
+    fn find_match_ranges_folds_ascii_case() {
+        assert_eq!(
+            find_match_ranges("HTML html body", "html"),
+            vec![(0, 4), (5, 9)]
+        );
+    }
+
+    #[test]
+    fn extract_char_range_uses_character_indices() {
+        assert_eq!(extract_char_range("aβc", 1, 2), "β");
     }
 }
